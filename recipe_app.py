@@ -15,40 +15,103 @@ query_params = st.query_params
 link_url = query_params.get("url", "")
 url = st.text_input("Recipe URL:", value=link_url)
 
-# --- HELPER: Fraction Converter ---
-def scale_line(line, multiplier):
-    if multiplier == 1:
+# --- HELPER: Unit Converter ---
+def convert_to_metric(line, ingredient_name):
+    # Basic density map (g per cup)
+    densities = {
+        'flour': 120, 'sugar': 200, 'butter': 227, 'rice': 185, 
+        'oats': 90, 'milk': 240, 'water': 240, 'honey': 340, 'oil': 218
+    }
+    
+    # 1. Parse the quantity (fractions/decimals)
+    pattern = r"^(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)\s*(cup|oz|ounce|lb|pound|tbsp|tablespoon|tsp|teaspoon)s?"
+    match = re.search(pattern, line.lower())
+    
+    if match:
+        qty_str = match.group(1)
+        unit = match.group(2)
+        
+        # Convert text number to float
+        try:
+            if " " in qty_str and "/" in qty_str:
+                whole, frac = qty_str.split()
+                val = float(whole) + float(Fraction(frac))
+            else:
+                val = float(Fraction(qty_str))
+        except:
+            return line
+
+        # Conversions
+        new_val = 0
+        new_unit = ""
+        
+        # Handle specific ingredients (Volume -> Mass)
+        ingredient_density = 240 # Default to water/milk weight if unknown
+        for key, density in densities.items():
+            if key in ingredient_name.lower():
+                ingredient_density = density
+                break
+
+        if 'cup' in unit:
+            new_val = val * ingredient_density
+            new_unit = "g"
+        elif 'oz' in unit or 'ounce' in unit:
+            new_val = val * 28.35
+            new_unit = "g"
+        elif 'lb' in unit or 'pound' in unit:
+            new_val = val * 453.59
+            new_unit = "g"
+        elif 'tbsp' in unit or 'tablespoon' in unit:
+            new_val = val * 15
+            new_unit = "ml"
+        elif 'tsp' in unit or 'teaspoon' in unit:
+            new_val = val * 5
+            new_unit = "ml"
+            
+        # Format output
+        return f"{int(new_val)}{new_unit} {line[match.end():]}"
+        
+    return line
+
+# --- HELPER: Portion Scaler ---
+def scale_line(line, multiplier, to_metric=False):
+    if multiplier == 1 and not to_metric:
         return line
     
     # Regex to find numbers/fractions at the START of the line
-    # Matches: "1 1/2", "1/2", "1.5", "2"
     pattern = r"^(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)"
     match = re.match(pattern, line.strip())
     
     if match:
         number_str = match.group(1)
-        original_text = line.strip()[len(number_str):] # The rest of the string (" cups of flour")
+        original_text = line.strip()[len(number_str):]
         
         try:
-            # Handle mixed fractions like "1 1/2"
+            # Parse number
             if " " in number_str and "/" in number_str:
                 whole, frac = number_str.split()
                 val = float(whole) + float(Fraction(frac))
             else:
                 val = float(Fraction(number_str))
             
-            # Scale it
-            new_val = val * multiplier
+            # 1. Scale it first
+            val = val * multiplier
             
-            # Format nicely (remove .0 if it's a whole number)
-            if new_val.is_integer():
-                new_num_str = str(int(new_val))
+            # 2. Convert to Metric if requested
+            if to_metric:
+                # Reconstruct line with new scaled value to pass to converter
+                temp_line = f"{val} {original_text.strip()}"
+                return convert_to_metric(temp_line, original_text)
+            
+            # Just Scaling (No Metric)
+            if val.is_integer():
+                new_num_str = str(int(val))
             else:
-                new_num_str = str(round(new_val, 2))
+                new_num_str = str(round(val, 2))
                 
             return f"{new_num_str}{original_text}"
         except:
-            return line # If math fails, return original
+            return line 
             
     return line
 
@@ -90,7 +153,7 @@ def get_recipe_data(url):
             "recipeIngredient": [],
             "recipeInstructions": []
         }
-
+        
         # Title
         og_title = soup.find("meta", property="og:title")
         if og_title: fallback_data["name"] = og_title["content"]
@@ -150,18 +213,15 @@ if should_run and url:
                 if img_url:
                     st.image(img_url, use_container_width=True)
 
-            # 3. Ingredients with SCALER
+            # 3. Ingredients
             st.subheader("Ingredients")
             
-            # --- PORTION SCALER UI ---
-            scale_col, _ = st.columns([2, 1])
-            multiplier = scale_col.radio(
-                "Scale Portion:", 
-                [0.5, 1.0, 2.0], 
-                index=1, 
-                horizontal=True,
-                format_func=lambda x: f"{x}x"
-            )
+            # --- UI CONTROLS ---
+            col1, col2 = st.columns(2)
+            with col1:
+                multiplier = st.radio("Portions:", [0.5, 1.0, 2.0], index=1, horizontal=True, format_func=lambda x: f"{x}x")
+            with col2:
+                metric_mode = st.toggle("Use Metric (g/ml)", value=False)
             
             ingredients = recipe.get('recipeIngredient', [])
             
@@ -169,8 +229,9 @@ if should_run and url:
                 st.warning("Could not automatically find ingredients on this site.")
             
             for ingredient in ingredients:
-                scaled_text = scale_line(ingredient, multiplier)
-                st.checkbox(scaled_text) 
+                # Apply scaling AND metric conversion
+                final_text = scale_line(ingredient, multiplier, metric_mode)
+                st.checkbox(final_text) 
 
             # 4. Instructions
             st.subheader("Instructions")
