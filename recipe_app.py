@@ -10,7 +10,12 @@ st.set_page_config(page_title="Recipe Cleaner", page_icon="🍳")
 
 st.title("🍳 Recipe Cleaner")
 
-# --- 1. DEEP LINK LOGIC ---
+# --- 1. SESSION STATE SETUP ---
+# This acts as the "memory" so data doesn't vanish when you click buttons
+if 'recipe_data' not in st.session_state:
+    st.session_state.recipe_data = None
+
+# --- 2. DEEP LINK LOGIC ---
 query_params = st.query_params
 link_url = query_params.get("url", "")
 url = st.text_input("Recipe URL:", value=link_url)
@@ -23,7 +28,7 @@ def convert_to_metric(line, ingredient_name):
         'oats': 90, 'milk': 240, 'water': 240, 'honey': 340, 'oil': 218
     }
     
-    # 1. Parse the quantity (fractions/decimals)
+    # Parse quantity
     pattern = r"^(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)\s*(cup|oz|ounce|lb|pound|tbsp|tablespoon|tsp|teaspoon)s?"
     match = re.search(pattern, line.lower())
     
@@ -31,7 +36,6 @@ def convert_to_metric(line, ingredient_name):
         qty_str = match.group(1)
         unit = match.group(2)
         
-        # Convert text number to float
         try:
             if " " in qty_str and "/" in qty_str:
                 whole, frac = qty_str.split()
@@ -41,12 +45,10 @@ def convert_to_metric(line, ingredient_name):
         except:
             return line
 
-        # Conversions
         new_val = 0
         new_unit = ""
         
-        # Handle specific ingredients (Volume -> Mass)
-        ingredient_density = 240 # Default to water/milk weight if unknown
+        ingredient_density = 240 
         for key, density in densities.items():
             if key in ingredient_name.lower():
                 ingredient_density = density
@@ -68,7 +70,6 @@ def convert_to_metric(line, ingredient_name):
             new_val = val * 5
             new_unit = "ml"
             
-        # Format output
         return f"{int(new_val)}{new_unit} {line[match.end():]}"
         
     return line
@@ -78,7 +79,6 @@ def scale_line(line, multiplier, to_metric=False):
     if multiplier == 1 and not to_metric:
         return line
     
-    # Regex to find numbers/fractions at the START of the line
     pattern = r"^(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)"
     match = re.match(pattern, line.strip())
     
@@ -87,23 +87,18 @@ def scale_line(line, multiplier, to_metric=False):
         original_text = line.strip()[len(number_str):]
         
         try:
-            # Parse number
             if " " in number_str and "/" in number_str:
                 whole, frac = number_str.split()
                 val = float(whole) + float(Fraction(frac))
             else:
                 val = float(Fraction(number_str))
             
-            # 1. Scale it first
             val = val * multiplier
             
-            # 2. Convert to Metric if requested
             if to_metric:
-                # Reconstruct line with new scaled value to pass to converter
                 temp_line = f"{val} {original_text.strip()}"
                 return convert_to_metric(temp_line, original_text)
             
-            # Just Scaling (No Metric)
             if val.is_integer():
                 new_num_str = str(int(val))
             else:
@@ -127,7 +122,7 @@ def get_recipe_data(url):
         
         recipe_data = None
 
-        # --- PLAN A: JSON-LD ---
+        # PLAN A: JSON-LD
         json_scripts = soup.find_all('script', type='application/ld+json')
         for script in json_scripts:
             try:
@@ -146,7 +141,7 @@ def get_recipe_data(url):
 
         if recipe_data: return recipe_data
 
-        # --- PLAN B: HTML FALLBACK ---
+        # PLAN B: HTML FALLBACK
         fallback_data = {
             "name": "Unknown Recipe",
             "image": None,
@@ -154,23 +149,19 @@ def get_recipe_data(url):
             "recipeInstructions": []
         }
         
-        # Title
         og_title = soup.find("meta", property="og:title")
         if og_title: fallback_data["name"] = og_title["content"]
         elif soup.find("h1"): fallback_data["name"] = soup.find("h1").get_text().strip()
 
-        # Image
         og_image = soup.find("meta", property="og:image")
         if og_image: fallback_data["image"] = og_image["content"]
 
-        # Ingredients
         for list_tag in soup.find_all(['ul', 'ol']):
             if 'ingredient' in str(list_tag.get('class', '')).lower():
                 for li in list_tag.find_all('li'):
                     text = li.get_text(" ", strip=True)
                     if text: fallback_data["recipeIngredient"].append(text)
         
-        # Instructions
         for list_tag in soup.find_all(['ul', 'ol', 'div']):
             class_name = str(list_tag.get('class', '')).lower()
             if any(x in class_name for x in ['instruction', 'direction', 'step', 'method']):
@@ -192,72 +183,80 @@ def get_recipe_data(url):
         return f"Error: {e}"
 
 # --- The Trigger ---
-should_run = st.button("Get Recipe") or (link_url and url == link_url)
+# Only fetch if button clicked OR deep link matches input AND we haven't loaded it yet
+trigger_fetch = st.button("Get Recipe") or (link_url and url == link_url and st.session_state.recipe_data is None)
 
-if should_run and url:
+if trigger_fetch and url:
     with st.spinner("Scraping recipe..."):
-        recipe = get_recipe_data(url)
+        data = get_recipe_data(url)
+        # STORE DATA IN MEMORY
+        st.session_state.recipe_data = data
 
-        if isinstance(recipe, dict):
-            # 1. Title
-            st.header(recipe.get('name', 'Unknown Recipe'))
+# --- DISPLAY LOGIC ---
+# Now we check the MEMORY, not just the button click
+if st.session_state.recipe_data:
+    recipe = st.session_state.recipe_data
 
-            # 2. Image
-            image = recipe.get('image')
-            if image:
-                img_url = ""
-                if isinstance(image, list): img_url = image[0]
-                elif isinstance(image, dict): img_url = image.get('url')
-                elif isinstance(image, str): img_url = image
-                
-                if img_url:
-                    st.image(img_url, use_container_width=True)
+    if isinstance(recipe, dict):
+        # 1. Title
+        st.header(recipe.get('name', 'Unknown Recipe'))
 
-            # 3. Ingredients
-            st.subheader("Ingredients")
+        # 2. Image
+        image = recipe.get('image')
+        if image:
+            img_url = ""
+            if isinstance(image, list): img_url = image[0]
+            elif isinstance(image, dict): img_url = image.get('url')
+            elif isinstance(image, str): img_url = image
             
-            # --- UI CONTROLS ---
-            col1, col2 = st.columns(2)
-            with col1:
-                multiplier = st.radio("Portions:", [0.5, 1.0, 2.0], index=1, horizontal=True, format_func=lambda x: f"{x}x")
-            with col2:
-                metric_mode = st.toggle("Use Metric (g/ml)", value=False)
-            
-            ingredients = recipe.get('recipeIngredient', [])
-            
-            if not ingredients:
-                st.warning("Could not automatically find ingredients on this site.")
-            
-            for ingredient in ingredients:
-                # Apply scaling AND metric conversion
-                final_text = scale_line(ingredient, multiplier, metric_mode)
-                st.checkbox(final_text) 
+            if img_url:
+                st.image(img_url, use_container_width=True)
 
-            # 4. Instructions
-            st.subheader("Instructions")
-            instructions = recipe.get('recipeInstructions', [])
-            
-            if not instructions:
-                st.warning("Could not automatically find instructions on this site.")
+        # 3. Ingredients
+        st.subheader("Ingredients")
+        
+        # --- UI CONTROLS ---
+        col1, col2 = st.columns(2)
+        with col1:
+            multiplier = st.radio("Portions:", [0.5, 1.0, 2.0], index=1, horizontal=True, format_func=lambda x: f"{x}x")
+        with col2:
+            metric_mode = st.toggle("Use Metric (g/ml)", value=False)
+        
+        ingredients = recipe.get('recipeIngredient', [])
+        
+        if not ingredients:
+            st.warning("Could not automatically find ingredients on this site.")
+        
+        for ingredient in ingredients:
+            # Apply scaling AND metric conversion
+            final_text = scale_line(ingredient, multiplier, metric_mode)
+            st.checkbox(final_text) 
 
-            clean_steps = []
-            for step in instructions:
-                if isinstance(step, str):
-                    clean_steps.append(step)
-                elif isinstance(step, dict): 
-                    clean_steps.append(step.get('text', ''))
-                elif isinstance(step, list): 
-                    for substep in step:
-                        if isinstance(substep, dict): clean_steps.append(substep.get('text', ''))
-                        elif isinstance(substep, str): clean_steps.append(substep)
+        # 4. Instructions
+        st.subheader("Instructions")
+        instructions = recipe.get('recipeInstructions', [])
+        
+        if not instructions:
+            st.warning("Could not automatically find instructions on this site.")
 
-            for i, step in enumerate(clean_steps, 1):
-                st.markdown(f"**{i}.** {step}")
+        clean_steps = []
+        for step in instructions:
+            if isinstance(step, str):
+                clean_steps.append(step)
+            elif isinstance(step, dict): 
+                clean_steps.append(step.get('text', ''))
+            elif isinstance(step, list): 
+                for substep in step:
+                    if isinstance(substep, dict): clean_steps.append(substep.get('text', ''))
+                    elif isinstance(substep, str): clean_steps.append(substep)
 
-        elif recipe is None:
-            st.error("Could not find recipe data. This site is very old or uses a unique structure we can't parse.")
-        else:
-            st.error(recipe)
+        for i, step in enumerate(clean_steps, 1):
+            st.markdown(f"**{i}.** {step}")
+
+    elif isinstance(recipe, str) and "Error" in recipe:
+         st.error(recipe)
+    else:
+        st.error("Could not find recipe data.")
 
 elif not url:
     st.write("Paste a URL or use the Share Sheet shortcut to start.")
