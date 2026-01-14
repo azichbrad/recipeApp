@@ -1,0 +1,36 @@
+/* Hide Streamlit Branding */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+
+/* Cleaner Sidebar Forms */
+[data-testid="stForm"] {
+    border: 0px;
+    padding: 0px;
+}
+
+/* Full Width Buttons */
+.stButton button {
+    width: 100%;
+    border-radius: 8px;
+    font-weight: 600;
+    padding-top: 10px;
+    padding-bottom: 10px;
+}
+
+/* Tab Styling */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 20px;
+}
+.stTabs [data-baseweb="tab"] {
+    height: 40px;
+    white-space: pre-wrap;
+    background-color: transparent;
+    border-bottom: 2px solid transparent;
+    font-size: 15px;
+}
+
+/* Title Spacing */
+.block-container {
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+}
